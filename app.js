@@ -27,6 +27,12 @@ const ICON_PATHS = {
   x: '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>',
   fileText: '<path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><polyline points="14,3 14,7 18,7"/><line x1="8.5" y1="12" x2="15.5" y2="12"/><line x1="8.5" y1="15.5" x2="15.5" y2="15.5"/>',
   edit: '<path d="M4 20l1-4L16 5l3 3L8 19l-4 1z"/><line x1="14" y1="7" x2="17" y2="10"/>',
+  lock: '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+  unlock: '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.4-2.3"/>',
+  upload: '<line x1="12" y1="14" x2="12" y2="3"/><polyline points="7,8 12,3 17,8"/><line x1="5" y1="19" x2="19" y2="19"/>',
+  moon: '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/>',
+  chevronLeft: '<polyline points="15,5 8,12 15,19"/>',
+  chevronRight2: '<polyline points="9,5 16,12 9,19"/>',
 };
 function icon(name, size) {
   size = size || 18;
@@ -69,11 +75,17 @@ const PRIORITY_META = {
 let state = {
   cases: [], tasks: [], updates: [], expenses: [],
   tab: 'today', openCaseId: null,
-  caseModal: null, taskModal: null, expenseModal: null,
+  caseModal: null, taskModal: null, expenseModal: null, invoiceModal: null,
   logCaseId: '',
   search: '', searchFocused: false,
-  settings: { theme: 'ink-brass', reminderDays: 7, notifyOnOpen: false },
+  settings: { theme: 'ink-brass', reminderDays: 7, notifyOnOpen: false, pinEnabled: false, pinHash: null },
   finance: { mode: 'case', caseId: '', periodType: 'month', anchorDate: todayISO(), customFrom: '', customTo: '' },
+  casesView: 'list',
+  causeWeek: todayISO(),
+  tools: { conflictQuery: '', limCoaDate: '', limYears: '' },
+  unlocked: false,
+  pinSetup: null, // { stage: 'new'|'confirm', first: '' } while setting a PIN
+  pinEntry: '', pinError: false,
 };
 
 const EXPENSE_CATEGORIES = {
@@ -87,12 +99,23 @@ const THEMES = [
   { id: 'slate-sage', label: 'Slate & Sage' },
   { id: 'midnight', label: 'Midnight' },
   { id: 'parchment', label: 'Parchment' },
+  { id: 'auto', label: 'Auto (device)' },
 ];
 
 function applyTheme() {
-  const t = state.settings.theme;
+  let t = state.settings.theme;
+  if (t === 'auto') {
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    t = prefersDark ? 'midnight' : 'ink-brass';
+  }
   if (!t || t === 'ink-brass') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', t);
+}
+if (window.matchMedia) {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSchemeChange = () => { if (state.settings.theme === 'auto') applyTheme(); };
+  if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
+  else if (mq.addListener) mq.addListener(onSchemeChange);
 }
 
 function load() {
@@ -171,6 +194,7 @@ function submitCaseForm(e) {
     id, title: f.elements.title.value.trim(), clientName: f.elements.clientName.value.trim(), court: f.elements.court.value.trim(),
     suitNo: f.elements.suitNo.value.trim(), status: f.elements.status.value,
     registrarName: f.elements.registrarName.value.trim(), registrarNumber: f.elements.registrarNumber.value.trim(),
+    causeOfActionDate: f.elements.causeOfActionDate.value, limitationYears: f.elements.limitationYears.value,
     nextDate: f.elements.nextDate.value, notes: f.elements.notes.value.trim(),
   };
   if (!data.title) return;
@@ -195,6 +219,86 @@ function setNotify(checked) {
   }
 }
 
+// ---- PIN lock ----
+async function hashPin(pin) {
+  const enc = new TextEncoder().encode('docket-salt-' + pin);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function startPinSetup() { state.pinSetup = { stage: 'new', first: '' }; render(); }
+function cancelPinSetup() { state.pinSetup = null; render(); }
+async function submitPinDigits(digits) {
+  const ps = state.pinSetup;
+  if (!ps) return;
+  if (ps.stage === 'new') {
+    if (digits.length < 4) { alert('Use at least 4 digits.'); return; }
+    state.pinSetup = { stage: 'confirm', first: digits };
+    render();
+  } else {
+    if (digits !== ps.first) {
+      alert("Those didn't match — let's try again.");
+      state.pinSetup = { stage: 'new', first: '' };
+      render();
+      return;
+    }
+    const hash = await hashPin(digits);
+    state.settings.pinEnabled = true;
+    state.settings.pinHash = hash;
+    state.pinSetup = null;
+    save(); render();
+  }
+}
+function disablePin() {
+  if (!confirm('Turn off the PIN lock?')) return;
+  state.settings.pinEnabled = false;
+  state.settings.pinHash = null;
+  save(); render();
+}
+async function submitUnlockPin(digits) {
+  const hash = await hashPin(digits);
+  if (hash === state.settings.pinHash) {
+    state.unlocked = true; state.pinEntry = ''; state.pinError = false; render();
+  } else {
+    state.pinEntry = ''; state.pinError = true; render();
+  }
+}
+
+// ---- Export / Import ----
+function exportData() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    cases: state.cases, tasks: state.tasks, updates: state.updates, expenses: state.expenses,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `the-docket-backup-${todayISO()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function triggerImport() { document.getElementById('import-file-input').click(); }
+function importDataFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!data.cases || !Array.isArray(data.cases)) throw new Error('bad format');
+      if (!confirm(`This will replace your current data with the backup from ${data.exportedAt ? fmtDate(data.exportedAt.slice(0,10)) : 'this file'} — ${data.cases.length} case(s). Continue?`)) return;
+      state.cases = data.cases || [];
+      state.tasks = data.tasks || [];
+      state.updates = data.updates || [];
+      state.expenses = data.expenses || [];
+      save(); render();
+      alert('Backup restored.');
+    } catch (e) {
+      alert("Couldn't read that file — make sure it's a backup exported from The Docket.");
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
 // ---- Finances ----
 function openExpenseModal(caseId, existingId) {
   if (existingId) state.expenseModal = state.expenses.find((x) => x.id === existingId);
@@ -202,6 +306,17 @@ function openExpenseModal(caseId, existingId) {
   render();
 }
 function closeExpenseModal() { state.expenseModal = null; render(); }
+function openInvoiceModal(caseId) { state.invoiceModal = { caseId, fee: '', note: '' }; render(); }
+function closeInvoiceModal() { state.invoiceModal = null; render(); }
+async function submitInvoiceForm(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fee = parseFloat(f.elements.fee.value) || 0;
+  const note = f.elements.note.value.trim();
+  const caseId = f.dataset.caseId;
+  closeInvoiceModal();
+  await generateInvoicePdf(caseId, fee, note);
+}
 function submitExpenseForm(e) {
   e.preventDefault();
   const f = e.target;
@@ -299,6 +414,18 @@ function submitLogForm(e) {
 // ---- Render ----
 function render() {
   const app = document.getElementById('app');
+  if (state.settings.pinEnabled && !state.unlocked) {
+    app.innerHTML = renderLockScreen();
+    const pinInput = document.getElementById('pin-entry-input');
+    if (pinInput) pinInput.focus();
+    return;
+  }
+  if (state.pinSetup) {
+    app.innerHTML = renderPinSetupScreen();
+    const pinInput = document.getElementById('pin-entry-input');
+    if (pinInput) pinInput.focus();
+    return;
+  }
   app.innerHTML = `
     <header class="app-header">
       <div class="header-mark">${icon('scale', 19)}</div>
@@ -321,6 +448,8 @@ function render() {
     ${state.caseModal ? caseModalHtml() : ''}
     ${state.taskModal ? taskModalHtml() : ''}
     ${state.expenseModal ? expenseModalHtml() : ''}
+    ${state.invoiceModal ? invoiceModalHtml() : ''}
+    <input id="import-file-input" type="file" accept="application/json" style="display:none" onchange="importDataFile(this)" />
   `;
   wireForms();
   if (state.searchFocused) {
@@ -371,12 +500,18 @@ function renderToday() {
 
 function renderCases() {
   if (!state.cases.length) return emptyState('No matters yet', 'Add your first case to start tracking hearing dates and tasks against it.', 'Add a case', "openCaseModal(null)");
+  const viewTabs = `
+    <div class="finance-mode-tabs" style="margin-bottom:12px">
+      <button class="finance-mode-btn${state.casesView === 'list' ? ' active' : ''}" onclick="state.casesView='list';render()">List</button>
+      <button class="finance-mode-btn${state.casesView === 'causelist' ? ' active' : ''}" onclick="state.casesView='causelist';render()">Cause list</button>
+    </div>`;
+  if (state.casesView === 'causelist') return viewTabs + renderCauseList();
   const q = state.search.trim().toLowerCase();
   const filtered = state.cases.filter((c) => !q || [c.title, c.clientName, c.court, c.suitNo].some((v) => (v || '').toLowerCase().includes(q)));
   const sorted = [...filtered].sort((a, b) => (a.nextDate || '9999').localeCompare(b.nextDate || '9999'));
   const searchBar = `<div class="search-bar"><span>${icon('search',16)}</span><input id="search-input" type="text" placeholder="Search cases, clients, courts…" value="${esc(state.search)}"
     oninput="state.search=this.value;render()" onfocus="state.searchFocused=true" onblur="state.searchFocused=false" /></div>`;
-  if (!sorted.length) return searchBar + emptyRow('No matters match your search.');
+  if (!sorted.length) return viewTabs + searchBar + emptyRow('No matters match your search.');
   const html = sorted.map((c) => {
     const meta = STATUS_META[c.status] || STATUS_META.active;
     const isOpen = state.openCaseId === c.id;
@@ -399,6 +534,7 @@ function renderCases() {
       ${isOpen ? `<div class="case-detail">
           ${c.notes ? `<p class="case-notes">${esc(c.notes)}</p>` : ''}
           ${(c.registrarName || c.registrarNumber) ? `<div class="registrar-line">Registrar: ${esc(c.registrarName || '—')}${c.registrarNumber ? ' · ' + esc(c.registrarNumber) : ''}</div>` : ''}
+          ${limitationLineHtml(c)}
           <div class="case-tasks-label">Tasks on this matter</div>
           ${caseTasks.length ? caseTasks.map((t) => taskRow(t, null, true)).join('') : emptyRow('No tasks linked yet.')}
           ${caseUpdates.length ? `<div class="case-updates-label">Logged updates</div>${caseUpdates.map(logEntryHtml).join('')}` : ''}
@@ -406,15 +542,64 @@ function renderCases() {
           <div class="case-actions">
             <button class="text-btn" onclick="openTaskModal('${c.id}', true)">${icon('plus',13)} Add task</button>
             <button class="text-btn" onclick="generateCaseReportPdf('${c.id}')">${icon('fileText',13)} PDF report</button>
+            <button class="text-btn" onclick="openInvoiceModal('${c.id}')">${icon('wallet',13)} Invoice</button>
             <button class="text-btn" onclick="openCaseModal('${c.id}')">${icon('edit',13)} Edit</button>
             <button class="text-btn text-btn-danger" onclick="deleteCase('${c.id}')">${icon('trash',13)} Delete</button>
           </div>
         </div>` : ''}
     </div>`;
   }).join('');
-  return searchBar + `<div class="case-list">${html}</div>` + fab("openCaseModal(null)");
+  return viewTabs + searchBar + `<div class="case-list">${html}</div>` + fab("openCaseModal(null)");
 }
 
+function renderCauseList() {
+  const anchor = new Date(state.causeWeek + 'T00:00:00');
+  const day = (anchor.getDay() + 6) % 7;
+  const monday = new Date(anchor); monday.setDate(anchor.getDate() - day);
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); return d.toISOString().slice(0, 10); });
+  const sunday = days[6];
+  const casesByDate = {};
+  state.cases.forEach((c) => { if (c.nextDate) (casesByDate[c.nextDate] = casesByDate[c.nextDate] || []).push(c); });
+
+  const prevWeek = new Date(monday); prevWeek.setDate(monday.getDate() - 7);
+  const nextWeek = new Date(monday); nextWeek.setDate(monday.getDate() + 7);
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+  const nav = `
+    <div class="week-nav">
+      <button class="icon-btn" onclick="state.causeWeek='${prevWeek.toISOString().slice(0,10)}';render()">${icon('chevronLeft', 16)}</button>
+      <span class="week-nav-label">${fmtDate(monday.toISOString().slice(0,10))} – ${fmtDate(sunday)}</span>
+      <button class="icon-btn" onclick="state.causeWeek='${nextWeek.toISOString().slice(0,10)}';render()">${icon('chevronRight2', 16)}</button>
+    </div>`;
+
+  const body = days.map((d, i) => {
+    const items = (casesByDate[d] || []).sort((a, b) => a.title.localeCompare(b.title));
+    return `<div class="cause-day">
+      <div class="cause-day-label">${dayNames[i]} <span class="cause-day-date">${fmtDate(d)}</span></div>
+      ${items.length ? items.map((c) => `
+        <button class="court-row" onclick="toggleCase('${c.id}');state.casesView='list';render()">
+          <div><div class="court-row-title">${esc(c.title)}</div>
+          <div class="court-row-sub">${esc(c.court || 'Court not set')}${c.suitNo ? ' · ' + esc(c.suitNo) : ''}</div></div>
+        </button>`).join('') : `<div class="empty-row">No sittings.</div>`}
+    </div>`;
+  }).join('');
+
+  return nav + body;
+}
+
+function limitationLineHtml(c) {
+  if (!c.causeOfActionDate || !c.limitationYears) return '';
+  const years = parseInt(c.limitationYears, 10);
+  if (!years) return '';
+  const d = new Date(c.causeOfActionDate + 'T00:00:00');
+  d.setFullYear(d.getFullYear() + years);
+  const expiry = d.toISOString().slice(0, 10);
+  const diff = daysDiff(expiry);
+  const urgent = diff !== null && diff <= 365;
+  return `<div class="registrar-line"${urgent ? ' style="color:var(--brick);font-weight:500"' : ''}>
+    ${urgent ? icon('alert', 13) : icon('calendar', 13)} Limitation expires ${fmtDate(expiry)}${diff !== null ? (diff < 0 ? ' — already passed' : ` — ${diff}d left`) : ''}
+  </div>`;
+}
 function financeSectionHtml(caseId) {
   const { totals, items } = caseExpenseTotals(caseId);
   return `
@@ -457,6 +642,7 @@ function renderTasks() {
 
 function renderSettings() {
   const s = state.settings;
+  const cryptoOk = !!(window.crypto && window.crypto.subtle);
   const swatches = THEMES.map((t) => `
     <button class="theme-swatch" onclick="setTheme('${t.id}')">
       <span class="theme-swatch-preview${s.theme === t.id ? ' selected' : ''}" data-theme-preview="${t.id}"></span>
@@ -494,7 +680,84 @@ function renderSettings() {
         </label>
       </div>
     </div>
+
+    <div class="settings-group">
+      <h3>Security</h3>
+      <p class="settings-desc">${cryptoOk ? 'Require a PIN before the app opens — worth turning on given client and financial data.' : 'PIN lock needs a secure (HTTPS) connection — not available when opened as a local file.'}</p>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${s.pinEnabled ? 'PIN lock is on' : 'PIN lock is off'}</div>
+          <div class="settings-row-sub">${s.pinEnabled ? 'Locks every time the app is opened fresh.' : 'Anyone with your phone can open the app.'}</div>
+        </div>
+        ${s.pinEnabled
+          ? `<button class="text-btn text-btn-danger" onclick="disablePin()">Turn off</button>`
+          : `<button class="text-btn" ${cryptoOk ? '' : 'disabled'} onclick="startPinSetup()">${icon('lock',13)} Set PIN</button>`}
+      </div>
+      ${s.pinEnabled ? `<div class="settings-row"><div class="settings-row-label">Change PIN</div><button class="text-btn" onclick="startPinSetup()">${icon('edit',13)} Change</button></div>` : ''}
+    </div>
+
+    <div class="settings-group">
+      <h3>Backup</h3>
+      <p class="settings-desc">Your data lives only on this device's browser storage — export it regularly, and definitely before switching phones or browsers.</p>
+      <div class="settings-row">
+        <div class="settings-row-label">Export a backup</div>
+        <button class="text-btn" onclick="exportData()">${icon('download',13)} Export</button>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-label">Restore from a backup</div>
+        <button class="text-btn" onclick="triggerImport()">${icon('upload',13)} Import</button>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h3>Conflict check</h3>
+      <p class="settings-desc">Search every case (including closed ones) before taking on a new matter.</p>
+      <div class="search-bar" style="margin-bottom:10px">
+        <span>${icon('search',16)}</span>
+        <input type="text" placeholder="Search a client or party name…" value="${esc(state.tools.conflictQuery)}"
+          oninput="state.tools.conflictQuery=this.value;render()" />
+      </div>
+      ${conflictResultsHtml()}
+    </div>
+
+    <div class="settings-group">
+      <h3>Limitation calculator</h3>
+      <p class="settings-desc">Quick check: given when a cause of action arose and the applicable limitation period, when does it expire?</p>
+      <div class="field-row" style="margin-bottom:8px">
+        <div class="field"><span class="field-label">Cause of action date</span>
+          <input type="date" value="${state.tools.limCoaDate}" onchange="state.tools.limCoaDate=this.value;render()" /></div>
+        <div class="field"><span class="field-label">Limitation period (years)</span>
+          <input type="number" min="1" max="30" value="${state.tools.limYears}" onchange="state.tools.limYears=this.value;render()" /></div>
+      </div>
+      ${limitationCalcResultHtml()}
+    </div>
   `;
+}
+
+function conflictResultsHtml() {
+  const q = state.tools.conflictQuery.trim().toLowerCase();
+  if (!q) return `<p class="log-hint">Type a name to search across all cases.</p>`;
+  const matches = state.cases.filter((c) => (c.title || '').toLowerCase().includes(q) || (c.clientName || '').toLowerCase().includes(q));
+  if (!matches.length) return `<p class="log-hint">No matches — looks clear.</p>`;
+  return `<div class="expense-list">${matches.map((c) => {
+    const meta = STATUS_META[c.status] || STATUS_META.active;
+    return `<div class="expense-row"><div class="expense-row-main"><span class="expense-cat" style="color:${meta.color}">${meta.label}</span><span class="expense-note">${esc(c.title)}${c.clientName ? ' — ' + esc(c.clientName) : ''}</span></div></div>`;
+  }).join('')}</div>`;
+}
+
+function limitationCalcResultHtml() {
+  const { limCoaDate, limYears } = state.tools;
+  if (!limCoaDate || !limYears) return '';
+  const years = parseInt(limYears, 10);
+  if (!years) return '';
+  const d = new Date(limCoaDate + 'T00:00:00');
+  d.setFullYear(d.getFullYear() + years);
+  const expiry = d.toISOString().slice(0, 10);
+  const diff = daysDiff(expiry);
+  const urgent = diff !== null && diff <= 365;
+  return `<div class="finance-totals"><div class="finance-total-row" style="${urgent ? 'color:var(--brick)' : ''}">
+    <span style="${urgent ? 'color:var(--brick) !important' : ''}">Expires</span><b>${fmtDate(expiry)}${diff !== null ? ' — ' + (diff < 0 ? 'already passed' : diff + ' days left') : ''}</b>
+  </div></div>`;
 }
 
 function renderLog() {
@@ -622,6 +885,36 @@ function logEntryHtml(u) {
   </div>`;
 }
 
+function renderLockScreen() {
+  return `
+    <div class="lock-screen">
+      <div class="lock-mark">${icon('lock', 26)}</div>
+      <h2>The Docket is locked</h2>
+      <p class="lock-sub">${state.pinError ? "That PIN didn't match — try again." : 'Enter your PIN to continue'}</p>
+      <input id="pin-entry-input" class="pin-display" type="password" inputmode="numeric" autofocus
+        value="${state.pinEntry}" maxlength="8"
+        oninput="state.pinEntry=this.value.replace(/[^0-9]/g,'');state.pinError=false;render();if(state.pinEntry.length>=4){}"
+        onkeydown="if(event.key==='Enter'&&state.pinEntry.length>=4)submitUnlockPin(state.pinEntry)" />
+      <button class="primary-btn" style="margin-top:14px" onclick="if(state.pinEntry.length>=4)submitUnlockPin(state.pinEntry)">Unlock</button>
+    </div>`;
+}
+
+function renderPinSetupScreen() {
+  const ps = state.pinSetup;
+  const label = ps.stage === 'new' ? 'Choose a PIN (4–8 digits)' : 'Enter it again to confirm';
+  return `
+    <div class="lock-screen">
+      <div class="lock-mark">${icon('lock', 26)}</div>
+      <h2>Set a PIN</h2>
+      <p class="lock-sub">${label}</p>
+      <input id="pin-entry-input" class="pin-display" type="password" inputmode="numeric" autofocus
+        maxlength="8" value=""
+        onkeydown="if(event.key==='Enter'&&this.value.length>=4)submitPinDigits(this.value)" />
+      <button class="primary-btn" style="margin-top:14px" onclick="submitPinDigits(document.getElementById('pin-entry-input').value)">Continue</button>
+      <button class="text-btn" style="margin-top:16px" onclick="cancelPinSetup()">Cancel</button>
+    </div>`;
+}
+
 function section(title, accent, body) {
   return `<section class="section">
     <div class="section-head"><span class="section-bar" style="background:${accent}"></span><h2>${title}</h2></div>
@@ -671,6 +964,10 @@ function caseModalHtml() {
         </div>
         <div class="field"><span class="field-label">Status</span><select name="status">${statusOpts}</select></div>
         <div class="field"><span class="field-label">Next court date</span><input type="date" name="nextDate" value="${c?.nextDate || ''}" /></div>
+        <div class="field-row">
+          <div class="field"><span class="field-label">Cause of action date</span><input type="date" name="causeOfActionDate" value="${c?.causeOfActionDate || ''}" /></div>
+          <div class="field"><span class="field-label">Limitation (years)</span><input type="number" name="limitationYears" min="1" max="30" value="${esc(c?.limitationYears)}" placeholder="e.g. 6" /></div>
+        </div>
         <div class="field"><span class="field-label">Notes</span><textarea name="notes" rows="3">${esc(c?.notes)}</textarea></div>
         <button type="submit" class="primary-btn">${c ? 'Save changes' : 'Add case'}</button>
       </form>
@@ -695,6 +992,22 @@ function taskModalHtml() {
   </div>`;
 }
 function wireForms() { /* forms use inline onsubmit; nothing extra to wire */ }
+function invoiceModalHtml() {
+  const inv = state.invoiceModal;
+  const c = state.cases.find((x) => x.id === inv.caseId);
+  const { totals } = caseExpenseTotals(inv.caseId);
+  return `<div class="modal-overlay" onclick="closeInvoiceModal()">
+    <div class="modal-sheet" onclick="event.stopPropagation()">
+      <div class="modal-head"><h2>Generate invoice</h2><button class="modal-close" onclick="closeInvoiceModal()">${icon('x',16)}</button></div>
+      <p class="log-hint">For ${esc(c ? c.title : '')}. Disbursements (${formatNaira(totals.total)}) are pulled in automatically — add your professional fee below.</p>
+      <form onsubmit="submitInvoiceForm(event)" class="modal-form" data-case-id="${inv.caseId}">
+        <div class="field"><span class="field-label">Professional fee (₦)</span><input type="number" name="fee" min="0" step="0.01" autofocus placeholder="e.g. 150000" /></div>
+        <div class="field"><span class="field-label">Note (optional)</span><input name="note" placeholder="e.g. Payment due within 14 days" /></div>
+        <button type="submit" class="primary-btn">${icon('share',15)} Generate &amp; share</button>
+      </form>
+    </div>
+  </div>`;
+}
 function expenseModalHtml() {
   const x = state.expenseModal;
   const catOpts = Object.entries(EXPENSE_CATEGORIES).map(([k, v]) => `<option value="${k}" ${x.category === k ? 'selected' : ''}>${v.label}</option>`).join('');
@@ -840,6 +1153,39 @@ async function generateFinancialReportPdf() {
     }
     await sharePdfFile(doc, `financial_report_${fin.periodType}.pdf`);
   }
+}
+
+async function generateInvoicePdf(caseId, fee, note) {
+  const c = state.cases.find((x) => x.id === caseId);
+  if (!c) return;
+  const doc = newPdfDoc();
+  if (!doc) { alert("PDF tools haven't finished loading — check your connection and try again in a moment."); return; }
+  const p = pdfCursor(doc);
+  const { totals, items } = caseExpenseTotals(caseId);
+
+  p.h1('INVOICE');
+  p.row('Date:', fmtDate(todayISO()));
+  p.row('Matter:', c.title);
+  if (c.clientName) p.row('Client:', c.clientName);
+  if (c.suitNo) p.row('Suit number:', c.suitNo);
+  p.space(6); p.rule(); p.space(6);
+
+  p.h2('Professional fee');
+  p.row('Fee:', formatNaira(fee));
+  p.space(6);
+
+  if (items.length) {
+    p.h2('Disbursements');
+    items.forEach((x) => p.body(`${fmtDate(x.date)} — ${(EXPENSE_CATEGORIES[x.category] || {}).label || x.category}: ${formatNaira(x.amount)}${x.note ? ' — ' + x.note : ''}`));
+    p.row('Disbursements subtotal:', formatNaira(totals.total));
+    p.space(6);
+  }
+
+  p.rule(); p.space(4);
+  p.h2(`Total due: ${formatNaira(fee + totals.total)}`);
+  if (note) { p.space(8); p.body(note); }
+
+  await sharePdfFile(doc, `${safeFilename(c.title)}_invoice.pdf`);
 }
 
 // ---- Install prompt ----
