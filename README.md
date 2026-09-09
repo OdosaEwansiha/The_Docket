@@ -1,9 +1,5 @@
 # The Docket — standalone app
 
-## What changed from the Claude version
-- No AI-parsing chatbox. The Log tab is now a short form (what happened, adjourned date, next action, due date) — same result, typed instead of parsed from free text.
-- Data is saved in your phone's browser storage (survives closing the browser, tied to this device and this browser only — clearing browser data will erase it).
-- Any date (a case's next court date, or a task's due date) has a ⬇︎ button that downloads a `.ics` file — tap it and Android will offer to add it straight into your real Calendar app, which is the reliable way to get an actual reminder/notification.
 - No background push notifications — nothing can alert you while the app itself isn't open, since that needs a server. Use the `.ics` calendar export for anything you need to be reminded of.
 
 ## Get "Add to Home Screen" working properly
