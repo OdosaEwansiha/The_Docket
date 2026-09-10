@@ -2,7 +2,20 @@
 const STORAGE_KEY = 'docket-data-v1';
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const todayISO = () => new Date().toISOString().slice(0, 10);
+function todayISO() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+function shiftDateStr(dateStr, deltaDays) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+function addYearsToStr(dateStr, years) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
 const esc = (s) => (s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ---- Icon system (inline SVG, consistent across Android/iOS/Windows — no emoji font dependence) ----
@@ -87,6 +100,8 @@ let state = {
   journal: [],
   journalDay: todayISO(),
   journalDraft: '',
+  journalEditingId: null,
+  journalEditDraft: '',
   tools: { conflictQuery: '', limCoaDate: '', limYears: '' },
   libraryQuery: '', libraryOpen: null,
   unlocked: false,
@@ -269,10 +284,26 @@ function deleteJournalEntry(id) {
   state.journal = state.journal.filter((j) => j.id !== id);
   save(); render();
 }
+function startEditJournalEntry(id) {
+  const j = state.journal.find((x) => x.id === id);
+  if (!j) return;
+  state.journalEditingId = id;
+  state.journalEditDraft = j.text;
+  render();
+}
+function cancelEditJournalEntry() {
+  state.journalEditingId = null;
+  render();
+}
+function saveEditJournalEntry(id) {
+  const text = state.journalEditDraft.trim();
+  if (!text) return;
+  state.journal = state.journal.map((j) => j.id === id ? { ...j, text } : j);
+  state.journalEditingId = null;
+  save(); render();
+}
 function shiftJournalDay(deltaDays) {
-  const d = new Date(state.journalDay + 'T00:00:00');
-  d.setDate(d.getDate() + deltaDays);
-  state.journalDay = d.toISOString().slice(0, 10);
+  state.journalDay = shiftDateStr(state.journalDay, deltaDays);
   render();
 }
 
@@ -373,20 +404,20 @@ function caseExpenseTotals(caseId) {
 }
 function periodRange(type, anchor, from, to) {
   if (type === 'custom') return { start: from || '0000-01-01', end: to || '9999-12-31' };
-  const a = new Date((anchor || todayISO()) + 'T00:00:00');
+  const a = new Date((anchor || todayISO()) + 'T00:00:00Z');
   if (type === 'week') {
-    const day = (a.getDay() + 6) % 7; // Monday = 0
-    const monday = new Date(a); monday.setDate(a.getDate() - day);
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const day = (a.getUTCDay() + 6) % 7; // Monday = 0
+    const monday = new Date(a); monday.setUTCDate(a.getUTCDate() - day);
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
     return { start: monday.toISOString().slice(0, 10), end: sunday.toISOString().slice(0, 10) };
   }
   if (type === 'month') {
-    const start = new Date(a.getFullYear(), a.getMonth(), 1);
-    const end = new Date(a.getFullYear(), a.getMonth() + 1, 0);
+    const start = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 1, 0));
     return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
   }
   if (type === 'year') {
-    return { start: `${a.getFullYear()}-01-01`, end: `${a.getFullYear()}-12-31` };
+    return { start: `${a.getUTCFullYear()}-01-01`, end: `${a.getUTCFullYear()}-12-31` };
   }
   return { start: '0000-01-01', end: '9999-12-31' }; // all time
 }
@@ -605,10 +636,21 @@ function renderJournal() {
     </div>`;
 
   const list = entries.length
-    ? entries.map((j) => `
+    ? entries.map((j) => j.id === state.journalEditingId ? `
+        <div class="journal-entry journal-entry-editing">
+          <div class="journal-entry-time">${j.time}</div>
+          <div class="journal-entry-edit-body">
+            <textarea class="log-input" rows="2" oninput="state.journalEditDraft=this.value">${esc(state.journalEditDraft)}</textarea>
+            <div class="journal-edit-actions">
+              <button class="text-btn" onclick="cancelEditJournalEntry()">Cancel</button>
+              <button class="text-btn" onclick="saveEditJournalEntry('${j.id}')">${icon('checkCircle',13)} Save</button>
+            </div>
+          </div>
+        </div>` : `
         <div class="journal-entry">
           <div class="journal-entry-time">${j.time}</div>
           <div class="journal-entry-text">${esc(j.text)}</div>
+          <button class="task-delete" onclick="startEditJournalEntry('${j.id}')">${icon('edit', 13)}</button>
           <button class="task-delete" onclick="deleteJournalEntry('${j.id}')">${icon('trash', 13)}</button>
         </div>`).join('')
     : `<p class="log-hint">Nothing logged for ${isToday ? 'today' : 'this day'} yet.</p>`;
@@ -618,7 +660,7 @@ function renderJournal() {
       <textarea class="log-input" rows="2" placeholder="What did you work on? e.g. Drafted witness statement for X, met with SGN re Y, filed CAC forms for Z…"
         oninput="state.journalDraft=this.value">${esc(state.journalDraft)}</textarea>
       <button class="log-send" onclick="addJournalEntry()">${icon('send', 17)}</button>
-    </div>` : '';
+    </div>` : `<p class="log-hint" style="margin-top:10px">You can edit or delete entries here, but new entries can only be added on today's date.</p>`;
 
   return nav + list + composer;
 }
@@ -678,23 +720,23 @@ function renderCases() {
 }
 
 function renderCauseList() {
-  const anchor = new Date(state.causeWeek + 'T00:00:00');
-  const day = (anchor.getDay() + 6) % 7;
-  const monday = new Date(anchor); monday.setDate(anchor.getDate() - day);
-  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); return d.toISOString().slice(0, 10); });
+  const anchor = new Date(state.causeWeek + 'T00:00:00Z');
+  const day = (anchor.getUTCDay() + 6) % 7;
+  const monday = new Date(anchor); monday.setUTCDate(anchor.getUTCDate() - day);
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setUTCDate(monday.getUTCDate() + i); return d.toISOString().slice(0, 10); });
   const sunday = days[6];
   const casesByDate = {};
   state.cases.forEach((c) => { if (c.nextDate) (casesByDate[c.nextDate] = casesByDate[c.nextDate] || []).push(c); });
 
-  const prevWeek = new Date(monday); prevWeek.setDate(monday.getDate() - 7);
-  const nextWeek = new Date(monday); nextWeek.setDate(monday.getDate() + 7);
+  const prevWeek = shiftDateStr(monday.toISOString().slice(0, 10), -7);
+  const nextWeek = shiftDateStr(monday.toISOString().slice(0, 10), 7);
   const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
   const nav = `
     <div class="week-nav">
-      <button class="icon-btn" onclick="state.causeWeek='${prevWeek.toISOString().slice(0,10)}';render()">${icon('chevronLeft', 16)}</button>
+      <button class="icon-btn" onclick="state.causeWeek='${prevWeek}';render()">${icon('chevronLeft', 16)}</button>
       <span class="week-nav-label">${fmtDate(monday.toISOString().slice(0,10))} – ${fmtDate(sunday)}</span>
-      <button class="icon-btn" onclick="state.causeWeek='${nextWeek.toISOString().slice(0,10)}';render()">${icon('chevronRight2', 16)}</button>
+      <button class="icon-btn" onclick="state.causeWeek='${nextWeek}';render()">${icon('chevronRight2', 16)}</button>
     </div>`;
 
   const body = days.map((d, i) => {
@@ -716,9 +758,7 @@ function limitationLineHtml(c) {
   if (!c.causeOfActionDate || !c.limitationYears) return '';
   const years = parseInt(c.limitationYears, 10);
   if (!years) return '';
-  const d = new Date(c.causeOfActionDate + 'T00:00:00');
-  d.setFullYear(d.getFullYear() + years);
-  const expiry = d.toISOString().slice(0, 10);
+  const expiry = addYearsToStr(c.causeOfActionDate, years);
   const diff = daysDiff(expiry);
   const urgent = diff !== null && diff <= 365;
   return `<div class="registrar-line"${urgent ? ' style="color:var(--brick);font-weight:500"' : ''}>
@@ -893,9 +933,7 @@ function limitationCalcResultHtml() {
   if (!limCoaDate || !limYears) return '';
   const years = parseInt(limYears, 10);
   if (!years) return '';
-  const d = new Date(limCoaDate + 'T00:00:00');
-  d.setFullYear(d.getFullYear() + years);
-  const expiry = d.toISOString().slice(0, 10);
+  const expiry = addYearsToStr(limCoaDate, years);
   const diff = daysDiff(expiry);
   const urgent = diff !== null && diff <= 365;
   return `<div class="finance-totals"><div class="finance-total-row" style="${urgent ? 'color:var(--brick)' : ''}">
