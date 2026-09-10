@@ -616,7 +616,7 @@ function renderJournal() {
   const composer = isToday ? `
     <div class="log-input-row" style="margin-top:14px">
       <textarea class="log-input" rows="2" placeholder="What did you work on? e.g. Drafted witness statement for X, met with SGN re Y, filed CAC forms for Z…"
-        oninput="state.journalDraft=this.value" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addJournalEntry();}">${esc(state.journalDraft)}</textarea>
+        oninput="state.journalDraft=this.value">${esc(state.journalDraft)}</textarea>
       <button class="log-send" onclick="addJournalEntry()">${icon('send', 17)}</button>
     </div>` : '';
 
