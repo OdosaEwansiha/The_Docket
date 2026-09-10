@@ -33,6 +33,8 @@ const ICON_PATHS = {
   moon: '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/>',
   chevronLeft: '<polyline points="15,5 8,12 15,19"/>',
   chevronRight2: '<polyline points="9,5 16,12 9,19"/>',
+  book: '<path d="M4 5.5c3-1.8 7-1.8 8 0v13c-1-1.8-5-1.8-8 0z"/><path d="M20 5.5c-3-1.8-7-1.8-8 0v13c1-1.8 5-1.8 8 0z"/>',
+  send: '<line x1="21" y1="3" x2="10" y2="14"/><polygon points="21,3 14,21 10,14 3,10"/>',
 };
 function icon(name, size) {
   size = size || 18;
@@ -82,7 +84,11 @@ let state = {
   finance: { mode: 'case', caseId: '', periodType: 'month', anchorDate: todayISO(), customFrom: '', customTo: '' },
   casesView: 'list',
   causeWeek: todayISO(),
+  journal: [],
+  journalDay: todayISO(),
+  journalDraft: '',
   tools: { conflictQuery: '', limCoaDate: '', limYears: '' },
+  libraryQuery: '', libraryOpen: null,
   unlocked: false,
   pinSetup: null, // { stage: 'new'|'confirm', first: '' } while setting a PIN
   pinEntry: '', pinError: false,
@@ -127,6 +133,7 @@ function load() {
       state.tasks = parsed.tasks || [];
       state.updates = parsed.updates || [];
       state.expenses = parsed.expenses || [];
+      state.journal = parsed.journal || [];
       state.settings = { ...state.settings, ...(parsed.settings || {}) };
     }
   } catch (e) { /* start empty */ }
@@ -136,7 +143,7 @@ function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       cases: state.cases, tasks: state.tasks, updates: state.updates,
-      expenses: state.expenses, settings: state.settings,
+      expenses: state.expenses, journal: state.journal, settings: state.settings,
     }));
   } catch (e) { console.error('Save failed', e); }
 }
@@ -248,6 +255,27 @@ async function submitPinDigits(digits) {
     save(); render();
   }
 }
+// ---- Daily journal ----
+function addJournalEntry() {
+  const text = state.journalDraft.trim();
+  if (!text) return;
+  const now = new Date();
+  const time = now.toTimeString().slice(0, 5);
+  state.journal = [...state.journal, { id: uid(), date: state.journalDay, time, text }];
+  state.journalDraft = '';
+  save(); render();
+}
+function deleteJournalEntry(id) {
+  state.journal = state.journal.filter((j) => j.id !== id);
+  save(); render();
+}
+function shiftJournalDay(deltaDays) {
+  const d = new Date(state.journalDay + 'T00:00:00');
+  d.setDate(d.getDate() + deltaDays);
+  state.journalDay = d.toISOString().slice(0, 10);
+  render();
+}
+
 function disablePin() {
   if (!confirm('Turn off the PIN lock?')) return;
   state.settings.pinEnabled = false;
@@ -267,7 +295,7 @@ async function submitUnlockPin(digits) {
 function exportData() {
   const payload = {
     exportedAt: new Date().toISOString(),
-    cases: state.cases, tasks: state.tasks, updates: state.updates, expenses: state.expenses,
+    cases: state.cases, tasks: state.tasks, updates: state.updates, expenses: state.expenses, journal: state.journal,
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -289,6 +317,7 @@ function importDataFile(input) {
       state.tasks = data.tasks || [];
       state.updates = data.updates || [];
       state.expenses = data.expenses || [];
+      state.journal = data.journal || [];
       save(); render();
       alert('Backup restored.');
     } catch (e) {
@@ -444,6 +473,7 @@ function render() {
       ${navBtn('tasks', 'checklist', 'Tasks')}
       ${navBtn('log', 'pencil', 'Log')}
       ${navBtn('finance', 'wallet', 'Finance')}
+      ${navBtn('journal', 'book', 'Journal')}
     </nav>
     ${state.caseModal ? caseModalHtml() : ''}
     ${state.taskModal ? taskModalHtml() : ''}
@@ -470,6 +500,8 @@ function renderTab() {
   if (state.tab === 'log') return renderLog();
   if (state.tab === 'settings') return renderSettings();
   if (state.tab === 'finance') return renderFinance();
+  if (state.tab === 'journal') return renderJournal();
+  if (state.tab === 'library') return renderLibrary();
   return '';
 }
 
@@ -484,6 +516,12 @@ function renderToday() {
   const casesById = Object.fromEntries(state.cases.map((c) => [c.id, c]));
 
   let html = '';
+  const loggedToday = state.journal.some((j) => j.date === todayISO());
+  if (!loggedToday) {
+    html += `<button class="journal-nudge" onclick="setTab('journal')">
+      ${icon('book', 16)} <span>You haven't logged today yet — tap to add what you've done</span>
+    </button>`;
+  }
   if (overdue.length) html += section('Overdue', 'var(--brick)', overdue.map((t) => taskRow(t, casesById[t.caseId]?.title)).join(''));
   html += section('Due today', 'var(--brass)', dueToday.length ? dueToday.map((t) => taskRow(t, casesById[t.caseId]?.title)).join('') : emptyRow('Nothing due today.'));
   html += section(`Next ${days} days`, 'var(--ink-faint)', week.length ? week.map((t) => taskRow(t, casesById[t.caseId]?.title)).join('') : emptyRow(`Nothing else on the horizon in the next ${days} days.`));
@@ -496,6 +534,93 @@ function renderToday() {
       </button>`).join(''));
   }
   return html + fab(() => {}, 'log');
+}
+
+function renderLibrary() {
+  if (typeof EVIDENCE_ACT === 'undefined') {
+    return `<button class="text-btn" style="margin-bottom:14px" onclick="setTab('settings')">${icon('arrowLeft',13)} Back</button>
+      <p class="log-hint">The Evidence Act data didn't load — check your connection and reopen this page.</p>`;
+  }
+  const back = `<button class="text-btn" style="margin-bottom:14px" onclick="setTab('settings')">${icon('arrowLeft',13)} Back</button>`;
+  const header = `<h3 style="font-family:'Newsreader',serif;font-size:18px;margin:0 0 4px">${EVIDENCE_ACT.title}</h3>
+    <p class="settings-desc">${esc(EVIDENCE_ACT.note)}</p>
+    <div class="search-bar" style="margin-bottom:14px">
+      <span>${icon('search',16)}</span>
+      <input id="search-input" type="text" placeholder="Search by section number or keyword…" value="${esc(state.libraryQuery)}"
+        oninput="state.libraryQuery=this.value;render()" onfocus="state.searchFocused=true" onblur="state.searchFocused=false" />
+    </div>`;
+
+  const q = state.libraryQuery.trim().toLowerCase();
+  let body = '';
+
+  if (q) {
+    const matches = [];
+    EVIDENCE_ACT.parts.forEach((part) => {
+      part.sections.forEach((s) => {
+        if (String(s.n) === q || s.t.toLowerCase().includes(q) || s.x.toLowerCase().includes(q)) {
+          matches.push({ ...s, partLabel: `Part ${part.num} — ${part.title}` });
+        }
+      });
+    });
+    body = matches.length
+      ? matches.map((s) => librarySectionHtml(s)).join('')
+      : `<p class="log-hint">No matching sections in the transcribed text (1–136). It may fall in 137–259, which is index-only for now.</p>`;
+  } else {
+    body = EVIDENCE_ACT.parts.map((part) => `
+      <div class="library-part">
+        <div class="library-part-title">Part ${part.num} — ${esc(part.title)}</div>
+        ${part.sections.map((s) => librarySectionHtml({ ...s, partLabel: '' })).join('')}
+      </div>`).join('') + (EVIDENCE_ACT.indexOnly || []).map((p) => `
+        <div class="library-part">
+          <div class="library-part-title">Part ${p.part} — ${esc(p.partTitle)}</div>
+          <div class="library-index-only">Sections ${p.range} — index only, full text not yet added</div>
+        </div>`).join('');
+  }
+
+  return back + header + body;
+}
+function librarySectionHtml(s) {
+  const isOpen = state.libraryOpen === s.n;
+  return `<div class="library-section">
+    <button class="library-section-head" onclick="state.libraryOpen=state.libraryOpen===${s.n}?null:${s.n};render()">
+      <span class="library-section-num">§${s.n}</span>
+      <span class="library-section-title">${esc(s.t)}</span>
+      <span class="chev${isOpen ? ' chev-open' : ''}">${icon('chevron',14)}</span>
+    </button>
+    ${isOpen ? `<div class="library-section-body">${esc(s.x).replace(/\n/g, '<br>')}</div>` : ''}
+  </div>`;
+}
+
+function renderJournal() {
+  const day = state.journalDay;
+  const isToday = day === todayISO();
+  const entries = state.journal.filter((j) => j.date === day).sort((a, b) => a.time.localeCompare(b.time));
+  const label = isToday ? 'Today' : new Date(day + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  const nav = `
+    <div class="week-nav">
+      <button class="icon-btn" onclick="shiftJournalDay(-1)">${icon('chevronLeft', 16)}</button>
+      <span class="week-nav-label">${label}</span>
+      <button class="icon-btn" onclick="shiftJournalDay(1)" ${isToday ? 'disabled style="opacity:0.3"' : ''}>${icon('chevronRight2', 16)}</button>
+    </div>`;
+
+  const list = entries.length
+    ? entries.map((j) => `
+        <div class="journal-entry">
+          <div class="journal-entry-time">${j.time}</div>
+          <div class="journal-entry-text">${esc(j.text)}</div>
+          <button class="task-delete" onclick="deleteJournalEntry('${j.id}')">${icon('trash', 13)}</button>
+        </div>`).join('')
+    : `<p class="log-hint">Nothing logged for ${isToday ? 'today' : 'this day'} yet.</p>`;
+
+  const composer = isToday ? `
+    <div class="log-input-row" style="margin-top:14px">
+      <textarea class="log-input" rows="2" placeholder="What did you work on? e.g. Drafted witness statement for X, met with SGN re Y, filed CAC forms for Z…"
+        oninput="state.journalDraft=this.value" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addJournalEntry();}">${esc(state.journalDraft)}</textarea>
+      <button class="log-send" onclick="addJournalEntry()">${icon('send', 17)}</button>
+    </div>` : '';
+
+  return nav + list + composer;
 }
 
 function renderCases() {
@@ -706,6 +831,24 @@ function renderSettings() {
       <div class="settings-row">
         <div class="settings-row-label">Restore from a backup</div>
         <button class="text-btn" onclick="triggerImport()">${icon('upload',13)} Import</button>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h3>Reference library</h3>
+      <p class="settings-desc">Browse statutes in-app.</p>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Evidence Act, 2011</div>
+          <div class="settings-row-sub">${typeof EVIDENCE_ACT !== 'undefined' ? 'Sections 1–136 full text · 137–259 index only, pending a clean source' : 'Not loaded'}</div>
+        </div>
+        <button class="text-btn" onclick="setTab('library')">${icon('book',13)} Open</button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">Constitution</div>
+          <div class="settings-row-sub">Not added yet — upload an official copy to add it</div>
+        </div>
       </div>
     </div>
 

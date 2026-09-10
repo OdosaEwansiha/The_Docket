@@ -194,11 +194,25 @@
   .cause-day-label { font-size: 12.5px; font-weight: 500; color: var(--ink); margin-bottom: 6px; }
   .cause-day-date { font-weight: 400; color: var(--ink-faint); }
   .cause-day .court-row { margin-bottom: 6px; }
+  .journal-nudge { width: 100%; display: flex; align-items: center; gap: 8px; background: var(--paper-raised); border: 1px solid var(--brass); border-radius: 10px; padding: 11px 13px; margin-bottom: 18px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--ink); font-family: inherit; }
+  .journal-entry { display: flex; align-items: flex-start; gap: 10px; background: var(--paper-raised); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(30,42,56,0.05); }
+  .journal-entry-time { font-size: 11px; color: var(--ink-faint); white-space: nowrap; padding-top: 1px; font-variant-numeric: tabular-nums; }
+  .journal-entry-text { flex: 1; font-size: 13.5px; line-height: 1.45; }
+  .library-part { margin-bottom: 18px; }
+  .library-part-title { font-family: 'Newsreader', serif; font-size: 14.5px; font-weight: 600; color: var(--ink); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .library-index-only { font-size: 12px; color: var(--ink-faint); font-style: italic; padding: 4px 0 8px; }
+  .library-section { background: var(--paper-raised); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; overflow: hidden; }
+  .library-section-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 11px; background: none; border: none; cursor: pointer; text-align: left; font-family: inherit; }
+  .library-section-num { font-size: 11.5px; color: var(--brass); font-weight: 600; flex-shrink: 0; }
+  .library-section-title { flex: 1; font-size: 12.5px; color: var(--ink); line-height: 1.4; }
+  .library-section-body { padding: 4px 13px 14px; font-size: 12.5px; line-height: 1.6; color: var(--ink-soft); border-top: 1px solid var(--line); margin-top: 2px; padding-top: 10px; white-space: pre-line; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="evidence-act-data.js"></script>
+<script src="evidence-act-data-2.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

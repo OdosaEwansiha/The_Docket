@@ -1,5 +1,5 @@
-const CACHE = 'the-docket-v5';
-const ASSETS = ['./index.html', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE = 'the-docket-v6';
+const ASSETS = ['./index.html', './app.js', './evidence-act-data.js', './evidence-act-data-2.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
