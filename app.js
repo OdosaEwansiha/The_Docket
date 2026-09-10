@@ -1379,7 +1379,9 @@ window.addEventListener('beforeinstallprompt', (e) => {
 // ---- Service worker ----
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('service-worker.js').catch(() => {});
+    navigator.serviceWorker.register('service-worker.js')
+      .then((reg) => reg.update().catch(() => {}))
+      .catch(() => {});
   });
 }
 
