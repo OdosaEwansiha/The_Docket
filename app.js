@@ -113,6 +113,7 @@ const EXPENSE_CATEGORIES = {
   filing: { label: 'Filing fee' },
   transport: { label: 'Transportation' },
   other: { label: 'Other' },
+  collectionoforder: { label: 'Collection of order' },
 };
 
 const THEMES = [
